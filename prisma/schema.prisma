@@ -1,0 +1,69 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id              String    @id @default(uuid())
+  email           String    @unique
+  name            String
+  passwordHash    String
+  emailVerifiedAt DateTime?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  sessions       Session[]
+  records        Record[]
+  deletionAudits DeletionAudit[]
+
+  @@map("users")
+}
+
+model Session {
+  id        String   @id @default(uuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+
+  @@index([userId])
+  @@map("sessions")
+}
+
+model Record {
+  id        String   @id @default(uuid())
+  publicId  String   @unique
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  content   String
+  category  String   @default("General")
+  status    String   @default("ACTIVE")
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([userId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([publicId])
+  @@map("records")
+}
+
+model DeletionAudit {
+  id                 String   @id @default(uuid())
+  recordPublicId     String
+  recordTitle        String
+  recordSnapshot     Json
+  deletedByUserId    String
+  deletedByUserEmail String
+  deletedByUser      User     @relation(fields: [deletedByUserId], references: [id], onDelete: Cascade)
+  deletedAt          DateTime @default(now())
+
+  @@index([deletedByUserId])
+  @@index([deletedAt(sort: Desc)])
+  @@index([recordPublicId])
+  @@map("deletion_audits")
+}
