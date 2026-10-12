@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { getCurrentSession } from "@/lib/security/session";
 import { prisma } from "@/lib/prisma";
+import { Prisma } from "@prisma/client";
 
 /**
  * GET /api/records/[publicId]
@@ -105,7 +106,7 @@ export async function DELETE(
     }
 
     // Transactionally persist Deletion Audit BEFORE deleting the record
-    await prisma.$transaction(async (tx) => {
+    await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
       // Step A: Record full audit snapshot
       await tx.deletionAudit.create({
         data: {
