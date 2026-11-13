@@ -264,16 +264,131 @@ else
 fi
 
 # -----------------------------------------------------------------------------
-# 7. Query Measurement (Required Assessment Section)
+# 7. Query Plan & Index Measurement (Required Assessment Section)
 # -----------------------------------------------------------------------------
 echo ""
-echo "== 7. Query Count Measurement =="
+echo "== 7. Query Plan & Index Measurement =="
 
-echo "Measuring SQL queries executed by actions:"
-echo "  - List Query: 1 single indexed SELECT on (userId, createdAt DESC)"
-echo "  - Detail Query: 1 single indexed SELECT on (publicId, userId)"
-echo "  - Delete Action: 1 atomic transaction (INSERT into deletion_audits + DELETE from records)"
-pass "Query measurements verified and classified against PostgreSQL execution plans"
+if MEASURE_OUTPUT=$(PUB_ID_B="$PUB_ID_B" node <<'NODE'
+const { PrismaClient } = require("@prisma/client");
+const p = new PrismaClient();
+
+function planText(rows) {
+  return rows.map((row) => row["QUERY PLAN"]).join("\n");
+}
+
+(async () => {
+  const ownerEmail = "user1.evaluator@example.com";
+  const measurementEmailPrefix = "query-measure-";
+  let exitCode = 0;
+
+  try {
+    await p.record.deleteMany({ where: { title: { startsWith: "__query_measurement__" } } });
+    await p.user.deleteMany({ where: { email: { startsWith: measurementEmailPrefix } } });
+
+    const owner = await p.user.findUnique({
+      where: { email: ownerEmail },
+      select: { id: true },
+    });
+    if (!owner) throw new Error("Measurement owner missing.");
+
+    const measurementUsers = Array.from({ length: 100 }, (_, i) => ({
+      email: `${measurementEmailPrefix}${String(i).padStart(3, "0")}@example.com`,
+      name: `Query Measure ${i}`,
+      passwordHash: "measurement-only",
+    }));
+    await p.user.createMany({ data: measurementUsers });
+
+    const createdUsers = await p.user.findMany({
+      where: { email: { startsWith: measurementEmailPrefix } },
+      select: { id: true },
+      orderBy: { email: "asc" },
+    });
+
+    const now = Date.now();
+    const measurementRecords = Array.from({ length: 2000 }, (_, i) => ({
+      publicId: `rec_measure_${String(i).padStart(8, "0")}`,
+      userId: createdUsers[i % createdUsers.length].id,
+      title: `__query_measurement__ ${i}`,
+      content: `Synthetic measurement row ${i}`,
+      category: "Measurement",
+      status: "ACTIVE",
+      createdAt: new Date(now - i * 1000),
+    }));
+    await p.record.createMany({ data: measurementRecords });
+    await p.$executeRawUnsafe('ANALYZE "records"');
+
+    const listPlan = planText(
+      await p.$queryRawUnsafe(
+        'EXPLAIN (FORMAT TEXT) SELECT id, "publicId", title, content, category, status, "createdAt", "updatedAt" FROM records WHERE "userId" = $1 ORDER BY "createdAt" DESC',
+        owner.id
+      )
+    );
+    const detailPlan = planText(
+      await p.$queryRawUnsafe(
+        'EXPLAIN (FORMAT TEXT) SELECT id, "publicId", title, content, category, status, "createdAt", "updatedAt" FROM records WHERE "publicId" = $1 AND "userId" = $2',
+        process.env.PUB_ID_B,
+        owner.id
+      )
+    );
+
+    const listUsesIndex = /records_userId_createdAt_idx/.test(listPlan);
+    const listUsesSeqScan = /Seq Scan on records/.test(listPlan);
+    const detailUsesIndex = /records_publicId_(idx|key)/.test(detailPlan);
+    const detailUsesSeqScan = /Seq Scan on records/.test(detailPlan);
+
+    console.log(`Seeded ${measurementUsers.length} tenants and ${measurementRecords.length} records for plan measurement.`);
+    console.log("List plan:");
+    console.log(
+      listPlan
+        .split("\n")
+        .filter((line) => /Scan|Sort|Index Cond/.test(line))
+        .map((line) => `  ${line.trim()}`)
+        .join("\n")
+    );
+    console.log("Detail plan:");
+    console.log(
+      detailPlan
+        .split("\n")
+        .filter((line) => /Scan|Sort|Index Cond|Filter/.test(line))
+        .map((line) => `  ${line.trim()}`)
+        .join("\n")
+    );
+
+    if (!listUsesIndex || listUsesSeqScan) {
+      console.error("List query did not use records_userId_createdAt_idx without a sequential scan.");
+      exitCode = 1;
+    }
+    if (!detailUsesIndex || detailUsesSeqScan) {
+      console.error("Detail query did not use the publicId index without a sequential scan.");
+      exitCode = 1;
+    }
+  } finally {
+    await p.record.deleteMany({ where: { title: { startsWith: "__query_measurement__" } } });
+    await p.user.deleteMany({ where: { email: { startsWith: measurementEmailPrefix } } });
+    await p.$executeRawUnsafe('ANALYZE "records"');
+    await p.$disconnect();
+  }
+
+  process.exit(exitCode);
+})().catch(async (err) => {
+  console.error(err);
+  await p.$disconnect().catch(() => {});
+  process.exit(1);
+});
+NODE
+); then
+  echo "$MEASURE_OUTPUT"
+  pass "PostgreSQL EXPLAIN confirms indexed list/detail plans with no sequential scans"
+else
+  echo "$MEASURE_OUTPUT"
+  fail "Query plan verification failed" "See EXPLAIN output above"
+fi
+
+echo "  Statement counts from route code:"
+echo "  - List: 1 indexed SELECT"
+echo "  - Detail (owner): 1 indexed SELECT; 403/404 paths add 1 lookup"
+echo "  - Delete: 1 ownership SELECT + 1 audit INSERT + 1 record DELETE in one transaction"
 
 # -----------------------------------------------------------------------------
 # Summary

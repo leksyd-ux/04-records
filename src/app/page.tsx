@@ -26,6 +26,21 @@ interface UserSession {
   name: string;
 }
 
+async function requestDemoSession(userNum: 1 | 2): Promise<UserSession> {
+  const res = await fetch("/api/auth/demo-login", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ user: userNum }),
+  });
+  const data = await res.json().catch(() => ({}));
+
+  if (!res.ok || !data.user) {
+    throw new Error(data.error || "Failed to establish demo session.");
+  }
+
+  return data.user as UserSession;
+}
+
 export default function RecordsPage() {
   const [currentUser, setCurrentUser] = useState<UserSession | null>(null);
   const [activeUserNumber, setActiveUserNumber] = useState<1 | 2>(1);
@@ -39,6 +54,7 @@ export default function RecordsPage() {
   const [viewMode, setViewMode] = useState<"list" | "create" | "detail">("list");
   const [selectedRecord, setSelectedRecord] = useState<RecordItem | null>(null);
   const [crossUserTestResult, setCrossUserTestResult] = useState<string | null>(null);
+  const [crossUserTestRunning, setCrossUserTestRunning] = useState(false);
 
   // Form state
   const [formTitle, setFormTitle] = useState("");
@@ -51,6 +67,102 @@ export default function RecordsPage() {
   const [recordToDelete, setRecordToDelete] = useState<RecordItem | null>(null);
   const [deleteSubmitting, setDeleteSubmitting] = useState(false);
 
+  const refreshData = useCallback(async (): Promise<boolean> => {
+    try {
+      const [recRes, auditRes] = await Promise.all([
+        fetch("/api/records"),
+        fetch("/api/records/audits"),
+      ]);
+
+      if (!recRes.ok) {
+        if (recRes.status === 401) return false;
+        throw new Error(`Records request failed with status ${recRes.status}.`);
+      }
+
+      const recData = await recRes.json();
+      setRecords(recData.records || []);
+      if (recData.user) {
+        setCurrentUser(recData.user);
+        setActiveUserNumber(recData.user.email?.includes("user2") ? 2 : 1);
+      }
+
+      if (auditRes.ok) {
+        const auditData = await auditRes.json();
+        setAudits(auditData.audits || []);
+      }
+
+      return true;
+    } catch (err) {
+      console.error(err);
+      setError("Failed to fetch records.");
+      return false;
+    }
+  }, []);
+
+  const authenticateDemoUser = useCallback(async (userNum: 1 | 2) => {
+    const user = await requestDemoSession(userNum);
+    setCurrentUser(user);
+    setActiveUserNumber(userNum);
+  }, []);
+
+  const fetchRecordDetail = useCallback(async (publicId: string): Promise<boolean> => {
+    const res = await fetch(`/api/records/${encodeURIComponent(publicId)}`);
+    if (!res.ok) return false;
+
+    const data = await res.json();
+    setSelectedRecord(data.record);
+    setViewMode("detail");
+    return true;
+  }, []);
+
+  const clearUrlState = useCallback(() => {
+    const url = new URL(window.location.href);
+    url.searchParams.delete("record");
+    url.searchParams.delete("view");
+    window.history.replaceState({}, "", url.toString());
+  }, []);
+
+  const syncViewWithUrl = useCallback(async () => {
+    const params = new URLSearchParams(window.location.search);
+    const publicId = params.get("record");
+
+    if (publicId) {
+      try {
+        if (await fetchRecordDetail(publicId)) return;
+      } catch (err) {
+        console.error(err);
+      }
+
+      setSelectedRecord(null);
+      setViewMode("list");
+      clearUrlState();
+      return;
+    }
+
+    setSelectedRecord(null);
+    setViewMode(params.get("view") === "create" ? "create" : "list");
+  }, [clearUrlState, fetchRecordDetail]);
+
+  const updateUrlState = (mode: "list" | "create" | "detail", publicId?: string) => {
+    setViewMode(mode);
+    setCrossUserTestResult(null);
+    if (mode !== "detail") setSelectedRecord(null);
+
+    const url = new URL(window.location.href);
+    if (mode === "detail" && publicId) {
+      url.searchParams.set("record", publicId);
+      url.searchParams.delete("view");
+    } else if (mode === "create") {
+      url.searchParams.delete("record");
+      url.searchParams.set("view", "create");
+    } else {
+      url.searchParams.delete("record");
+      url.searchParams.delete("view");
+    }
+
+    window.history.pushState({}, "", url.toString());
+  };
+
   // Switch authenticated user (User 1 vs User 2)
   const switchUser = async (userNum: 1 | 2) => {
     setError(null);
@@ -59,87 +171,59 @@ export default function RecordsPage() {
     setLoading(true);
 
     try {
-      const res = await fetch("/api/auth/demo-login", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user: userNum }),
-      });
-      const data = await res.json();
-      if (res.ok) {
-        setCurrentUser(data.user);
-        setActiveUserNumber(userNum);
-        setViewMode("list");
-        setSelectedRecord(null);
-        await refreshData();
-      } else {
-        setError(data.error || "Failed to switch user.");
-      }
-    } catch {
-      setError("Network error switching user session.");
+      await authenticateDemoUser(userNum);
+      setViewMode("list");
+      setSelectedRecord(null);
+      setRecordToDelete(null);
+      clearUrlState();
+      await refreshData();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Network error switching user session.");
     } finally {
       setLoading(false);
     }
   };
 
-  const refreshData = useCallback(async () => {
-    try {
-      const [recRes, auditRes] = await Promise.all([
-        fetch("/api/records"),
-        fetch("/api/records/audits"),
-      ]);
-
-      if (recRes.ok) {
-        const recData = await recRes.json();
-        setRecords(recData.records || []);
-        if (recData.user) setCurrentUser(recData.user);
-      }
-      if (auditRes.ok) {
-        const auditData = await auditRes.json();
-        setAudits(auditData.audits || []);
-      }
-    } catch (err) {
-      console.error(err);
-      setError("Failed to fetch records.");
-    }
-  }, []);
-
-  // Sync URL query params with view state
-  useEffect(() => {
-    const params = new URLSearchParams(window.location.search);
-    const recId = params.get("record");
-    if (recId) {
-      fetch(`/api/records/${recId}`)
-        .then((res) => {
-          if (res.ok) return res.json();
-          throw new Error("Record access failed");
-        })
-        .then((data) => {
-          setSelectedRecord(data.record);
-          setViewMode("detail");
-        })
-        .catch(() => {
-          // If forbidden or not found, fall back to list
-          setViewMode("list");
-        });
-    }
-  }, []);
-
-  const updateUrlState = (mode: "list" | "create" | "detail", publicId?: string) => {
-    setViewMode(mode);
-    setCrossUserTestResult(null);
-    const url = new URL(window.location.href);
-    if (mode === "detail" && publicId) {
-      url.searchParams.set("record", publicId);
-    } else {
-      url.searchParams.delete("record");
-    }
-    window.history.pushState({}, "", url.toString());
-  };
-
   // Initial load
   useEffect(() => {
-    switchUser(1);
-  }, []);
+    let cancelled = false;
+
+    const boot = async () => {
+      try {
+        const ready = await refreshData();
+        if (cancelled) return;
+
+        if (!ready) {
+          await authenticateDemoUser(1);
+          if (cancelled) return;
+          await refreshData();
+        }
+
+        if (!cancelled) await syncViewWithUrl();
+      } catch (err) {
+        if (!cancelled) {
+          setError(err instanceof Error ? err.message : "Failed to establish session.");
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    };
+
+    void boot();
+
+    return () => {
+      cancelled = true;
+    };
+  }, [authenticateDemoUser, refreshData, syncViewWithUrl]);
+
+  useEffect(() => {
+    const handlePopState = () => {
+      void syncViewWithUrl();
+    };
+
+    window.addEventListener("popstate", handlePopState);
+    return () => window.removeEventListener("popstate", handlePopState);
+  }, [syncViewWithUrl]);
 
   // Create record handler
   const handleCreateRecord = async (e: React.FormEvent) => {
@@ -208,28 +292,45 @@ export default function RecordsPage() {
 
   // Cross-user test: Attempt to fetch the currently selected record using the other user's session
   const testCrossUserAccess = async (targetPublicId: string) => {
-    setCrossUserTestResult(null);
+    const originalUserNum = activeUserNumber;
+    const otherUserNum = originalUserNum === 1 ? 2 : 1;
+
+    setCrossUserTestRunning(true);
+    setCrossUserTestResult("Running live isolation test...");
+
+    let result = "Cross-user test did not complete.";
+
     try {
-      // Temporarily call endpoint with adversary session or query
-      const otherUserNum = activeUserNumber === 1 ? 2 : 1;
-      const res = await fetch(`/api/records/${targetPublicId}`, {
-        headers: { "X-Test-Adversary": otherUserNum.toString() },
-      });
-      const data = await res.json();
+      await requestDemoSession(otherUserNum);
+      const res = await fetch(`/api/records/${encodeURIComponent(targetPublicId)}`);
+      const data = await res.json().catch(() => ({}));
 
       if (res.status === 403) {
-        setCrossUserTestResult("✓ PASS: 403 Forbidden returned — Structural ownership prevented cross-user access.");
+        result = "✓ PASS: 403 Forbidden returned — structural ownership prevented cross-user access.";
       } else if (res.status === 404) {
-        setCrossUserTestResult("✓ PASS: 404 Not Found — Record does not exist for querying user.");
+        result = "✓ PASS: 404 Not Found — record does not exist for the adversary session.";
       } else if (res.ok) {
-        setCrossUserTestResult("✕ FAIL: 200 OK returned — Data leaked across users!");
+        result = "✕ FAIL: 200 OK returned — data leaked across users!";
       } else {
-        setCrossUserTestResult(`Status ${res.status}: ${data.error}`);
+        result = `Status ${res.status}: ${data.error || "Unexpected response from the records API."}`;
       }
     } catch {
-      setCrossUserTestResult("Network error executing cross-user test.");
+      result = "Network error executing the cross-user test.";
+    } finally {
+      try {
+        await requestDemoSession(originalUserNum);
+        await refreshData();
+      } catch {
+        result = "Cross-user test completed, but the original session could not be restored. Refresh the page.";
+      }
+
+      setCrossUserTestRunning(false);
+      setCrossUserTestResult(result);
     }
   };
+
+  const crossUserTestPassed = crossUserTestResult?.includes("PASS") ?? false;
+  const crossUserTestFailed = crossUserTestResult?.includes("FAIL") ?? false;
 
   return (
     <main>
@@ -249,7 +350,7 @@ export default function RecordsPage() {
             id="switch-user-1-btn"
             className={`btn btn-sm ${activeUserNumber === 1 ? "btn-primary" : "btn-secondary"}`}
             onClick={() => switchUser(1)}
-            disabled={loading}
+            disabled={loading || crossUserTestRunning}
           >
             User 1 (Owner)
           </button>
@@ -257,7 +358,7 @@ export default function RecordsPage() {
             id="switch-user-2-btn"
             className={`btn btn-sm ${activeUserNumber === 2 ? "btn-primary" : "btn-secondary"}`}
             onClick={() => switchUser(2)}
-            disabled={loading}
+            disabled={loading || crossUserTestRunning}
           >
             User 2 (Adversary)
           </button>
@@ -534,7 +635,7 @@ export default function RecordsPage() {
               </div>
               <div>• Owner: <strong>{currentUser?.email}</strong></div>
               <div>• Internal UUID PK: <em>Hidden (never exposed in URL, DOM, or payload)</em></div>
-              <div>• Addressable URL: <code>/records?record={selectedRecord.publicId}</code></div>
+              <div>• Addressable URL: <code>?record={selectedRecord.publicId}</code></div>
               <div>• Created: {new Date(selectedRecord.createdAt).toLocaleString()}</div>
             </div>
 
@@ -546,37 +647,46 @@ export default function RecordsPage() {
                     Test Cross-User Access Isolation
                   </div>
                   <div style={{ fontSize: "0.8125rem", color: "var(--text-muted)" }}>
-                    Attempt fetching this record as User {activeUserNumber === 1 ? 2 : 1} to verify 403 Forbidden protection.
+                    Temporarily switch to User {activeUserNumber === 1 ? 2 : 1}, attempt this fetch, then restore your session.
                   </div>
                 </div>
                 <button
                   id="test-cross-user-btn"
                   className="btn btn-secondary btn-sm"
                   onClick={() => testCrossUserAccess(selectedRecord.publicId)}
+                  disabled={crossUserTestRunning || loading}
                 >
-                  Execute Cross-User Attack Test
+                  {crossUserTestRunning ? "Running Isolation Test..." : "Execute Cross-User Attack Test"}
                 </button>
               </div>
 
               {crossUserTestResult && (
                 <div
                   id="cross-user-test-output"
+                  role="status"
+                  aria-live="polite"
                   style={{
                     marginTop: "12px",
                     padding: "10px 14px",
                     borderRadius: "6px",
                     fontSize: "0.8125rem",
                     fontWeight: 600,
-                    background: crossUserTestResult.includes("PASS")
+                    background: crossUserTestPassed
                       ? "var(--success-bg)"
-                      : "var(--danger-bg)",
-                    color: crossUserTestResult.includes("PASS")
+                      : crossUserTestFailed
+                      ? "var(--danger-bg)"
+                      : "var(--bg-input)",
+                    color: crossUserTestPassed
                       ? "var(--success-text)"
-                      : "var(--danger-text)",
+                      : crossUserTestFailed
+                      ? "var(--danger-text)"
+                      : "var(--text-secondary)",
                     border: `1px solid ${
-                      crossUserTestResult.includes("PASS")
+                      crossUserTestPassed
                         ? "var(--success-border)"
-                        : "var(--danger-border)"
+                        : crossUserTestFailed
+                        ? "var(--danger-border)"
+                        : "var(--border-color)"
                     }`,
                   }}
                 >

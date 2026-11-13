@@ -60,24 +60,24 @@ Follow these numbered steps to run the slice locally:
 
 ### Step 1: Session Resolution & User Switching
 - **User Action**: The user opens the page or clicks the identity switcher (User 1 or User 2) on the top bar.
-- **Frontend Behavior**: [src/app/page.tsx](file:///Users/leksyd/Desktop/tasks/04-records/src/app/page.tsx) sends a request to `POST /api/auth/demo-login` with `{ user: 1 }` or `{ user: 2 }`.
-- **Server Handler**: [src/app/api/auth/demo-login/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/auth/demo-login/route.ts) sets an HTTP-only HMAC-signed cookie (`records_session_token`) and returns the authenticated user session.
+- **Frontend Behavior**: [src/app/page.tsx](src/app/page.tsx) sends a request to `POST /api/auth/demo-login` with `{ user: 1 }` or `{ user: 2 }`.
+- **Server Handler**: [src/app/api/auth/demo-login/route.ts](src/app/api/auth/demo-login/route.ts) sets an HTTP-only HMAC-signed cookie (`records_session_token`) and returns the authenticated user session.
 
 ### Step 2: List View & Genuine Empty State
 - **User Action**: The user views the main records dashboard.
 - **Frontend Behavior**: Invokes `GET /api/records`.
-- **Server Handler**: [src/app/api/records/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/route.ts) queries `WHERE userId = session.user.id ORDER BY createdAt DESC`. If the user has no records, an empty array `[]` is returned.
+- **Server Handler**: [src/app/api/records/route.ts](src/app/api/records/route.ts) queries `WHERE userId = session.user.id ORDER BY createdAt DESC`. If the user has no records, an empty array `[]` is returned.
 - **UI Rendering**: If empty, a genuine empty state card renders ("No records found for [User]"). No mock or fake records are ever injected.
 
 ### Step 3: Record Creation with Opaque Identifiers
 - **User Action**: The user fills in title, content, category, and status, and submits the form.
-- **Server Handler**: [src/app/api/records/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/route.ts) validates input with Zod (`CreateRecordSchema`), generates a cryptographically random opaque public ID via `generatePublicId()` (`rec_...`), and persists the record with `userId: session.user.id`.
+- **Server Handler**: [src/app/api/records/route.ts](src/app/api/records/route.ts) validates input with Zod (`CreateRecordSchema`), generates a cryptographically random opaque public ID via `generatePublicId()` (`rec_...`), and persists the record with `userId: session.user.id`.
 - **Response**: Returns HTTP 201 Created with `{ publicId, title, content, ... }`. The internal database primary key UUID is never exposed.
 
 ### Step 4: Detail View with Addressable URL State
 - **User Action**: The user clicks "View Detail" on a record.
 - **Frontend Behavior**: The URL query state is updated to `?record=rec_...` without a full page reload via `window.history.pushState()`, making the view directly bookmarkable and shareable.
-- **Server Handler**: `GET /api/records/[publicId]` ([src/app/api/records/[publicId]/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/%5BpublicId%5D/route.ts)) fetches the record using structural query filtering: `WHERE publicId = ? AND userId = session.user.id`.
+- **Server Handler**: `GET /api/records/[publicId]` ([src/app/api/records/[publicId]/route.ts](src/app/api/records/%5BpublicId%5D/route.ts)) fetches the record using structural query filtering: `WHERE publicId = ? AND userId = session.user.id`.
 - **Cross-User Protection**: If User 2 queries User 1's public identifier, the server returns HTTP 403 Forbidden.
 
 ### Step 5: Delete Confirmation & Permanent Transactional Audit
@@ -93,7 +93,7 @@ Follow these numbered steps to run the slice locally:
 
 ## Section 4 — The Data Model
 
-The PostgreSQL schema is declared in [prisma/schema.prisma](file:///Users/leksyd/Desktop/tasks/04-records/prisma/schema.prisma):
+The PostgreSQL schema is declared in [prisma/schema.prisma](prisma/schema.prisma):
 
 ```prisma
 model User {
@@ -182,7 +182,7 @@ Embedding ownership criteria directly into the database query's `WHERE` clause r
 Fetching by ID first (`SELECT * FROM records WHERE id = ?`) and doing `if (record.userId !== session.user.id)` in JavaScript creates a severe vulnerability window. If a developer forgets the `if` check in a newly created endpoint, adds a batch query, or experiences an unhandled exception, another tenant's private data is leaked. Making ownership structural ensures the database engine itself enforces the security boundary.
 
 #### How I implemented it
-In [src/app/api/records/[publicId]/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/%5BpublicId%5D/route.ts#L25-L38):
+In [src/app/api/records/[publicId]/route.ts](src/app/api/records/%5BpublicId%5D/route.ts#L25-L38):
 ```typescript
 const record = await prisma.record.findFirst({
   where: {
@@ -206,7 +206,7 @@ Decoupling public-facing resource references from internal database primary keys
 Exposing autoincrementing integers (e.g. `/records/42`) allows adversaries to enumerate records, calculate total business volume, and systematically scrape IDs. While UUIDs fix enumeration, exposing raw database primary keys leaks internal schema details. Opaque identifiers provide clean, domain-prefixed, unguessable identifiers.
 
 #### How I implemented it
-In [src/lib/records/id.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/lib/records/id.ts#L10-L15):
+In [src/lib/records/id.ts](src/lib/records/id.ts#L10-L15):
 ```typescript
 export function generatePublicId(): string {
   return `rec_${crypto.randomBytes(8).toString("hex")}`;
@@ -227,7 +227,7 @@ Transactionally capturing an immutable record of who deleted a record, what was 
 In enterprise and compliance systems, deleting a record without a verifiable audit trail makes security forensics, dispute resolution, and compliance certification impossible.
 
 #### How I implemented it
-In [src/app/api/records/[publicId]/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/%5BpublicId%5D/route.ts#L80-L115), both actions execute within an atomic transaction:
+In [src/app/api/records/[publicId]/route.ts](src/app/api/records/%5BpublicId%5D/route.ts#L80-L115), both actions execute within an atomic transaction:
 ```typescript
 await prisma.$transaction(async (tx) => {
   await tx.deletionAudit.create({
@@ -258,7 +258,7 @@ Strictly distinguishing between unauthenticated requests (HTTP 401), unauthorize
 Using 401 when a user is already logged in misleads API clients into attempting re-authentication loops. Using 404 for existing cross-user resources obscures security metrics, making it impossible for intrusion detection systems to distinguish between broken links and deliberate cross-tenant attack attempts.
 
 #### How I implemented it
-In [src/app/api/records/[publicId]/route.ts](file:///Users/leksyd/Desktop/tasks/04-records/src/app/api/records/%5BpublicId%5D/route.ts#L45-L65):
+In [src/app/api/records/[publicId]/route.ts](src/app/api/records/%5BpublicId%5D/route.ts#L45-L65):
 - No session → **401 Unauthorized**
 - Record owned by querying user → **200 OK**
 - Record exists in database under another user → **403 Forbidden**
@@ -272,17 +272,26 @@ I chose against returning 200 with empty data or 401 for authenticated users. Cl
 ### 5. Query Optimization & Indexing Strategy
 
 #### What it is
-Designing targeted compound database indexes matching query execution patterns (`userId` and `createdAt DESC`) to achieve single-query lookups with index-only scans.
+Designing targeted compound database indexes matching query execution patterns (`userId` and `createdAt DESC`) to keep list and detail lookups on indexed access paths with a single application query.
 
 #### Why it is needed
 Without an index on `(userId, createdAt)`, PostgreSQL performs a full table sequential scan (Seq Scan) on every list request, causing database CPU spikes and degradation as record volume scales.
 
 #### How I implemented it
-In [prisma/schema.prisma](file:///Users/leksyd/Desktop/tasks/04-records/prisma/schema.prisma):
+In [prisma/schema.prisma](prisma/schema.prisma):
 ```prisma
 @@index([userId, createdAt(sort: Desc)])
 @@index([publicId])
 ```
+
+Measured with `test-records-flow.sh` after seeding 2,000 records across 100 synthetic tenants:
+
+- **List query**: `Index Scan using "records_userId_createdAt_idx"` with `Index Cond: ("userId" = ...)`; no sequential scan on `records`.
+- **Detail query**: `Index Scan using "records_publicId_idx"` with `Index Cond: ("publicId" = ...)`, applying `userId` as a filter; no sequential scan on `records`.
+
+These are indexed access paths, not index-only scans: the indexes do not cover every projected column, so PostgreSQL still reads the heap for matching rows. I corrected an earlier claim that the list query was index-only.
+
+Route statement counts: list is 1 SELECT; owner detail is 1 SELECT (the 403/404 path adds one lookup); delete is 1 ownership SELECT plus 1 audit INSERT and 1 record DELETE in one transaction.
 
 #### What I chose against, and why
 I chose against unindexed table scans or fetching entire user object trees with relations when only record fields are required.
@@ -292,13 +301,13 @@ I chose against unindexed table scans or fetching entire user object trees with 
 ### 6. Addressable URL State & Genuine Empty States
 
 #### What it is
-Synchronizing client-side view states with the browser URL (`?record=rec_...`) and displaying truthful zero-data empty states without placeholder/mock data.
+Synchronizing client-side view states with the browser URL (`?record=rec_...` for detail and `?view=create` for the create form) and displaying truthful zero-data empty states without placeholder/mock data.
 
 #### Why it is needed
 If viewing a record detail does not update the URL, users cannot refresh the page, bookmark the view, or share the link. Injecting fake placeholder records confuses users and misrepresents database state.
 
 #### How I implemented it
-In [src/app/page.tsx](file:///Users/leksyd/Desktop/tasks/04-records/src/app/page.tsx), `updateUrlState()` updates `window.history.pushState()`. When `records.length === 0`, a dedicated empty-state component renders.
+In [src/app/page.tsx](src/app/page.tsx), `updateUrlState()` uses `window.history.pushState()`, a `popstate` listener restores the matching view on back/forward, and direct links are resolved only after the session is established. Forbidden or missing records fall back to the list and scrub the invalid URL. When `records.length === 0`, a dedicated empty-state component renders.
 
 #### What I chose against, and why
 I chose against client-only transient state that resets on refresh and against dummy "sample" records in production views.

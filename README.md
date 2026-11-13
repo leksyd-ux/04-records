@@ -9,6 +9,7 @@ Production-grade record management and strict access-control system built with N
 - **Access-Control Matrix Enforcement**: Explicit distinction between 401 (unauthenticated), 403 (unauthorized cross-user access), and 404 (non-existent).
 - **Addressable URL State & Genuine Empty States**: Synchronized URL state with zero fake/placeholder records.
 - **Interactive Dual-User Evaluation Switcher**: One-click toggle between User 1 (Owner) and User 2 (Adversary) in the UI.
+- **Live Cross-User Isolation Test**: Temporarily switches sessions, attempts the fetch, restores the original session, and reports the real API status.
 
 ## Quick Start
 ```bash
